@@ -9,7 +9,11 @@ async def check_read_only(company_id: str) -> None:
             "SELECT read_only, name FROM companies WHERE id=?", (company_id,)
         )
         row = await cursor.fetchone()
-    if row and row["read_only"]:
+    if row is None:
+        raise ValueError(
+            f"Company '{company_id}' not found. Call list_companies() for valid IDs."
+        )
+    if row["read_only"]:
         raise ValueError(
             f'Company "{row["name"]}" is in read-only mode. '
             "Disable read-only in company settings before making changes."

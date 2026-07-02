@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import time
 from collections import deque
 from typing import Any
@@ -17,10 +19,22 @@ _PRODUCTION_BASE = "https://quickbooks.api.intuit.com/v3/company"
 _TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 _REVOKE_URL = "https://developer.api.intuit.com/v2/oauth2/tokens/revoke"
 
+# Intuit retired minor versions below 75 in 2025.
+_MINOR_VERSION = "75"
+
 # Simple sliding-window rate limiter: 500 req/min per company
 _RATE_WINDOW = 60.0
 _RATE_LIMIT = 500
 _company_request_times: dict[str, deque[float]] = {}
+
+# One refresh at a time per company — Intuit rotates refresh tokens, so
+# concurrent refreshes can invalidate each other's new token.
+_refresh_locks: dict[str, asyncio.Lock] = {}
+
+
+def escape_query_value(value: str) -> str:
+    """Escape a string for interpolation into a QBO query literal."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def _check_rate_limit(company_id: str) -> None:
@@ -34,6 +48,12 @@ def _check_rate_limit(company_id: str) -> None:
             f"{_RATE_LIMIT} requests per minute. Wait before retrying."
         )
     times.append(now)
+
+
+def _basic_credentials() -> str:
+    return base64.b64encode(
+        f"{settings.qbo_client_id}:{settings.qbo_client_secret}".encode()
+    ).decode()
 
 
 class QBOClient:
@@ -57,27 +77,39 @@ class QBOClient:
             return f"{_PRODUCTION_BASE}/{self.realm_id}"
         return f"{_SANDBOX_BASE}/{self.realm_id}"
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, content_type: str = "application/json") -> dict[str, str]:
         return {
             "Accept": "application/json",
             "Authorization": f"Bearer {self._access_token}",
-            "Content-Type": "application/json",
+            "Content-Type": content_type,
         }
 
     async def ensure_token_fresh(self) -> None:
-        if time.time() > self._token_expires_at - 300:
+        if time.time() <= self._token_expires_at - 300:
+            return
+        lock = _refresh_locks.setdefault(self.company_id, asyncio.Lock())
+        async with lock:
+            # Another task may have refreshed while we waited for the lock.
+            async with get_db() as db:
+                cursor = await db.execute(
+                    "SELECT access_token, refresh_token, token_expires_at "
+                    "FROM companies WHERE id=?",
+                    (self.company_id,),
+                )
+                row = await cursor.fetchone()
+            if row and row["token_expires_at"] > time.time() + 300:
+                self._access_token = row["access_token"]
+                self._refresh_token = row["refresh_token"]
+                self._token_expires_at = row["token_expires_at"]
+                return
             await self._refresh_tokens()
 
     async def _refresh_tokens(self) -> None:
-        import base64
-        credentials = base64.b64encode(
-            f"{settings.qbo_client_id}:{settings.qbo_client_secret}".encode()
-        ).decode()
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 _TOKEN_URL,
                 headers={
-                    "Authorization": f"Basic {credentials}",
+                    "Authorization": f"Basic {_basic_credentials()}",
                     "Content-Type": "application/x-www-form-urlencoded",
                     "Accept": "application/json",
                 },
@@ -86,11 +118,16 @@ class QBOClient:
                     "refresh_token": self._refresh_token,
                 },
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                raise RuntimeError(
+                    f"Failed to refresh QuickBooks tokens for company {self.company_id} "
+                    f"({resp.status_code}): {resp.text[:300]}. "
+                    "The connection may have been revoked — reconnect with connect_company."
+                )
             data = resp.json()
 
         self._access_token = data["access_token"]
-        self._refresh_token = data["refresh_token"]
+        self._refresh_token = data.get("refresh_token", self._refresh_token)
         self._token_expires_at = int(time.time()) + int(data.get("expires_in", 3600))
 
         async with get_db() as db:
@@ -102,71 +139,71 @@ class QBOClient:
             await db.commit()
         log.info("qbo.token_refreshed", company_id=self.company_id)
 
-    async def get(self, endpoint: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+    async def _request(
+        self,
+        method: str,
+        endpoint: str,
+        params: dict[str, str] | None = None,
+        json_body: dict[str, Any] | None = None,
+        _retry_on_auth: bool = True,
+    ) -> dict[str, Any]:
         await self.ensure_token_fresh()
         _check_rate_limit(self.company_id)
         url = f"{self._base_url}/{endpoint}"
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                url,
-                headers=self._headers(),
-                params=params or {},
-            )
-            resp.raise_for_status()
-            return resp.json()  # type: ignore[no-any-return]
+        all_params = {"minorversion": _MINOR_VERSION, **(params or {})}
 
-    async def post(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
-        await self.ensure_token_fresh()
-        _check_rate_limit(self.company_id)
-        url = f"{self._base_url}/{endpoint}"
         async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                url,
-                headers=self._headers(),
-                json=payload,
+            if method == "POST" and json_body is None:
+                # Body-less POST (e.g. invoice send) — QBO requires octet-stream.
+                resp = await client.post(
+                    url,
+                    headers=self._headers("application/octet-stream"),
+                    params=all_params,
+                    content=b"",
+                )
+            elif method == "POST":
+                resp = await client.post(
+                    url, headers=self._headers(), params=all_params, json=json_body
+                )
+            else:
+                resp = await client.get(url, headers=self._headers(), params=all_params)
+
+        if resp.status_code == 401 and _retry_on_auth:
+            # Token may have been revoked or rotated externally; force a refresh and retry once.
+            self._token_expires_at = 0
+            return await self._request(
+                method, endpoint, params=params, json_body=json_body, _retry_on_auth=False
             )
-            resp.raise_for_status()
-            return resp.json()  # type: ignore[no-any-return]
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"QuickBooks API error {resp.status_code} on {method} {endpoint}: "
+                f"{resp.text[:500]}"
+            )
+        return resp.json()  # type: ignore[no-any-return]
+
+    async def get(self, endpoint: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+        return await self._request("GET", endpoint, params=params)
+
+    async def post(
+        self,
+        endpoint: str,
+        payload: dict[str, Any] | None = None,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        return await self._request("POST", endpoint, params=params, json_body=payload)
 
     async def query(self, sql: str) -> dict[str, Any]:
-        await self.ensure_token_fresh()
-        _check_rate_limit(self.company_id)
-        url = f"{self._base_url}/query"
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                url,
-                headers=self._headers(),
-                params={"query": sql, "minorversion": "65"},
-            )
-            resp.raise_for_status()
-            return resp.json()  # type: ignore[no-any-return]
+        return await self._request("GET", "query", params={"query": sql})
 
     async def report(self, report_name: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-        await self.ensure_token_fresh()
-        _check_rate_limit(self.company_id)
-        url = f"{self._base_url}/reports/{report_name}"
-        all_params = {"minorversion": "65"}
-        if params:
-            all_params.update(params)
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                url,
-                headers=self._headers(),
-                params=all_params,
-            )
-            resp.raise_for_status()
-            return resp.json()  # type: ignore[no-any-return]
+        return await self._request("GET", f"reports/{report_name}", params=params)
 
     async def revoke_tokens(self) -> None:
-        import base64
-        credentials = base64.b64encode(
-            f"{settings.qbo_client_id}:{settings.qbo_client_secret}".encode()
-        ).decode()
         async with httpx.AsyncClient() as client:
             await client.post(
                 _REVOKE_URL,
                 headers={
-                    "Authorization": f"Basic {credentials}",
+                    "Authorization": f"Basic {_basic_credentials()}",
                     "Content-Type": "application/x-www-form-urlencoded",
                     "Accept": "application/json",
                 },

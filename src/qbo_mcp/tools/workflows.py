@@ -9,6 +9,7 @@ import structlog
 from mcp.server.fastmcp import FastMCP
 
 from qbo_mcp.qbo.adapter import qbo_invoice_to_model, qbo_pl_report_to_model
+from qbo_mcp.qbo.client import escape_query_value as _esc
 from qbo_mcp.safety import audit
 from qbo_mcp.tenant.registry import registry
 
@@ -40,8 +41,8 @@ def register(mcp: FastMCP) -> None:  # noqa: ANN001
 
         entity = "Invoice" if entity_type == "invoices" else "Bill"
         sql = (
-            f"SELECT * FROM {entity} WHERE TxnDate >= '{from_date}' "
-            f"AND TxnDate <= '{to_date}' ORDERBY TxnDate MAXRESULTS 1000"
+            f"SELECT * FROM {entity} WHERE TxnDate >= '{_esc(from_date)}' "
+            f"AND TxnDate <= '{_esc(to_date)}' ORDERBY TxnDate MAXRESULTS 1000"
         )
         data = await client.query(sql)
         raw_list = data.get("QueryResponse", {}).get(entity, [])
@@ -113,6 +114,9 @@ def register(mcp: FastMCP) -> None:  # noqa: ANN001
         Returns a structured checklist with status for each check.
         """
         client = await registry.get_client(company_id)
+        import re
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period):
+            raise ValueError(f"Invalid period '{period}'. Use YYYY-MM format, e.g. '2025-05'.")
         year, month = int(period[:4]), int(period[5:7])
         start = f"{year}-{month:02d}-01"
         # Last day of month

@@ -24,6 +24,14 @@ CREATE TABLE IF NOT EXISTS draft_actions (
     FOREIGN KEY (company_id) REFERENCES companies(id)
 );
 
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state           TEXT PRIMARY KEY,
+    realm_id        TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    redirect_uri    TEXT NOT NULL,
+    created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id              TEXT PRIMARY KEY,
     company_id      TEXT,

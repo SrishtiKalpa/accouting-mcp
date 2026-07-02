@@ -24,11 +24,10 @@ def main() -> None:
     asyncio.run(init_schema())
 
     if settings.mcp_transport == "streamable-http":
-        mcp.run(
-            transport="streamable-http",
-            host=settings.mcp_host,
-            port=settings.mcp_port,
-        )
+        # FastMCP.run() takes no host/port — they are configured via settings.
+        mcp.settings.host = settings.mcp_host
+        mcp.settings.port = settings.mcp_port
+        mcp.run(transport="streamable-http")
     else:
         mcp.run(transport="stdio")
 

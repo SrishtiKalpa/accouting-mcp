@@ -57,15 +57,27 @@ async def connect_company(
     from urllib.parse import urlencode
     import secrets
 
-    state = secrets.token_urlsafe(16)
+    state = secrets.token_urlsafe(32)
     uri = redirect_uri or settings.qbo_redirect_uri
+
+    async with get_db() as db:
+        # Expire stale pending states so the table cannot grow unbounded.
+        await db.execute(
+            "DELETE FROM oauth_states WHERE created_at < unixepoch() - 600"
+        )
+        await db.execute(
+            "INSERT INTO oauth_states (state, realm_id, name, redirect_uri) "
+            "VALUES (?, ?, ?, ?)",
+            (state, realm_id, name, uri),
+        )
+        await db.commit()
 
     params = {
         "client_id": settings.qbo_client_id,
         "scope": "com.intuit.quickbooks.accounting",
         "redirect_uri": uri,
         "response_type": "code",
-        "state": f"{state}:{realm_id}:{name}",
+        "state": state,
         "access_type": "offline",
     }
     auth_url = "https://appcenter.intuit.com/connect/oauth2?" + urlencode(params)
@@ -99,10 +111,18 @@ async def complete_oauth_connection(code: str, state: str) -> str:
     import base64
     import httpx
 
-    parts = state.split(":", 2)
-    if len(parts) != 3:
-        raise ValueError("Invalid state parameter. Re-run connect_company to get a fresh OAuth URL.")
-    _token_state, realm_id, name = parts
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT realm_id, name, redirect_uri, created_at FROM oauth_states WHERE state=?",
+            (state,),
+        )
+        row = await cursor.fetchone()
+    if row is None or row["created_at"] < time.time() - 600:
+        raise ValueError(
+            "Unknown or expired state parameter. "
+            "Re-run connect_company to get a fresh OAuth URL."
+        )
+    realm_id, name, redirect_uri = row["realm_id"], row["name"], row["redirect_uri"]
 
     credentials = base64.b64encode(
         f"{settings.qbo_client_id}:{settings.qbo_client_secret}".encode()
@@ -119,11 +139,18 @@ async def complete_oauth_connection(code: str, state: str) -> str:
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": settings.qbo_redirect_uri,
+                "redirect_uri": redirect_uri,
             },
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"OAuth token exchange failed ({resp.status_code}): {resp.text[:300]}"
+            )
         data = resp.json()
+
+    async with get_db() as db:
+        await db.execute("DELETE FROM oauth_states WHERE state=?", (state,))
+        await db.commit()
 
     token_expires_at = int(time.time()) + int(data.get("expires_in", 3600))
     company_id = await registry.add_company(
@@ -196,23 +223,26 @@ async def commit_action(draft_action_id: str) -> str:
     """
     async def _executor(company_id: str, tool_name: str, payload: dict[str, Any]) -> Any:
         client = await registry.get_client(company_id)
-        endpoint = payload.get("endpoint", "")
+        endpoint = str(payload.get("endpoint", ""))
         method = payload.get("method", "POST")
-        body = payload.get("body", {})
-        params = payload.get("params", {})
+        body = payload.get("body") or None
+        params = {str(k): str(v) for k, v in payload.get("params", {}).items()}
 
         if method == "POST":
-            url = str(endpoint)
-            if params:
-                import urllib.parse
-                url = url + "?" + urllib.parse.urlencode(params)
-            return await client.post(url, body)
-        else:
-            return await client.get(str(endpoint), {str(k): str(v) for k, v in params.items()})
+            return await client.post(endpoint, body, params=params)
+        return await client.get(endpoint, params)
 
-    result = await draft_mod.commit_draft(draft_action_id, _executor)
     row = await draft_mod.get_draft(draft_action_id)
     company_id = row["company_id"] if row else None
+    try:
+        result = await draft_mod.commit_draft(draft_action_id, _executor)
+    except Exception as exc:
+        await audit.log_action(
+            "commit_action", f"draft={draft_action_id}", "error",
+            company_id=company_id, draft_action_id=draft_action_id,
+            error_message=str(exc)[:500],
+        )
+        raise
     await audit.log_action(
         "commit_action", f"draft={draft_action_id}", "success",
         company_id=company_id, draft_action_id=draft_action_id,
@@ -252,14 +282,15 @@ async def get_audit_log(
     Shows who called what, when, and the outcome. Useful for compliance and debugging.
     from_date and to_date are ISO format: YYYY-MM-DD.
     """
+    limit = max(1, min(limit, 500))
     conditions = ["company_id=?"]
     params: list[Any] = [company_id]
 
     if from_date:
-        conditions.append("created_at >= strftime('%s', ?)")
+        conditions.append("created_at >= CAST(strftime('%s', ?) AS INTEGER)")
         params.append(from_date)
     if to_date:
-        conditions.append("created_at <= strftime('%s', ?) + 86400")
+        conditions.append("created_at < CAST(strftime('%s', ?) AS INTEGER) + 86400")
         params.append(to_date)
 
     sql = (

@@ -28,13 +28,19 @@ _BILL_STATUS_MAP = {
 
 
 def _map_line_item(raw: dict[str, Any]) -> LineItem:
-    detail = raw.get("SalesItemLineDetail") or raw.get("ItemBasedExpenseLineDetail") or {}
+    detail = (
+        raw.get("SalesItemLineDetail")
+        or raw.get("ItemBasedExpenseLineDetail")
+        or raw.get("AccountBasedExpenseLineDetail")
+        or {}
+    )
+    ref = detail.get("ItemRef") or detail.get("AccountRef") or {}
     return LineItem(
         description=raw.get("Description", ""),
         quantity=float(detail.get("Qty", 1)),
         unit_price=float(detail.get("UnitPrice", 0)),
         amount=float(raw.get("Amount", 0)),
-        account_ref=str(detail.get("ItemRef", {}).get("value", "")) or None,
+        account_ref=str(ref.get("value", "")) or None,
     )
 
 
@@ -113,7 +119,8 @@ def qbo_bill_to_model(raw: dict[str, Any]) -> Bill:
         line_items=[
             _map_line_item(li)
             for li in raw.get("Line", [])
-            if li.get("DetailType") == "ItemBasedExpenseLineDetail"
+            if li.get("DetailType")
+            in ("ItemBasedExpenseLineDetail", "AccountBasedExpenseLineDetail")
         ],
         total=float(raw.get("TotalAmt", 0)),
         amount_due=balance,

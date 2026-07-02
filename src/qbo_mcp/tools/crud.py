@@ -12,10 +12,15 @@ from qbo_mcp.qbo.adapter import (
     qbo_invoice_to_model,
     qbo_vendor_to_model,
 )
+from qbo_mcp.qbo.client import escape_query_value as _esc
 from qbo_mcp.safety import audit, draft, guards
 from qbo_mcp.tenant.registry import registry
 
 log = structlog.get_logger(__name__)
+
+
+def _clamp_limit(limit: int, ceiling: int = 1000) -> int:
+    return max(1, min(limit, ceiling))
 
 
 def register(mcp: FastMCP) -> None:  # noqa: ANN001
@@ -42,14 +47,14 @@ def register(mcp: FastMCP) -> None:  # noqa: ANN001
         conditions = ["SELECT * FROM Invoice"]
         clauses: list[str] = []
         if from_date:
-            clauses.append(f"TxnDate >= '{from_date}'")
+            clauses.append(f"TxnDate >= '{_esc(from_date)}'")
         if to_date:
-            clauses.append(f"TxnDate <= '{to_date}'")
+            clauses.append(f"TxnDate <= '{_esc(to_date)}'")
         if customer_id:
-            clauses.append(f"CustomerRef = '{customer_id}'")
+            clauses.append(f"CustomerRef = '{_esc(customer_id)}'")
         if clauses:
             conditions.append("WHERE " + " AND ".join(clauses))
-        conditions.append(f"ORDERBY TxnDate DESC MAXRESULTS {limit}")
+        conditions.append(f"ORDERBY TxnDate DESC MAXRESULTS {_clamp_limit(limit)}")
         sql = " ".join(conditions)
 
         data = await client.query(sql)
@@ -233,8 +238,9 @@ def register(mcp: FastMCP) -> None:  # noqa: ANN001
         Use search to filter by name or email. Returns JSON array of customer objects.
         """
         client = await registry.get_client(company_id)
+        limit = _clamp_limit(limit)
         if search:
-            sql = f"SELECT * FROM Customer WHERE DisplayName LIKE '%{search}%' MAXRESULTS {limit}"
+            sql = f"SELECT * FROM Customer WHERE DisplayName LIKE '%{_esc(search)}%' MAXRESULTS {limit}"
         else:
             sql = f"SELECT * FROM Customer ORDERBY DisplayName MAXRESULTS {limit}"
         data = await client.query(sql)
@@ -332,8 +338,9 @@ def register(mcp: FastMCP) -> None:  # noqa: ANN001
         Use search to filter by name. Returns JSON array of vendor objects.
         """
         client = await registry.get_client(company_id)
+        limit = _clamp_limit(limit)
         if search:
-            sql = f"SELECT * FROM Vendor WHERE DisplayName LIKE '%{search}%' MAXRESULTS {limit}"
+            sql = f"SELECT * FROM Vendor WHERE DisplayName LIKE '%{_esc(search)}%' MAXRESULTS {limit}"
         else:
             sql = f"SELECT * FROM Vendor ORDERBY DisplayName MAXRESULTS {limit}"
         data = await client.query(sql)
@@ -405,16 +412,16 @@ def register(mcp: FastMCP) -> None:  # noqa: ANN001
         client = await registry.get_client(company_id)
         clauses: list[str] = []
         if vendor_id:
-            clauses.append(f"VendorRef = '{vendor_id}'")
+            clauses.append(f"VendorRef = '{_esc(vendor_id)}'")
         if from_date:
-            clauses.append(f"TxnDate >= '{from_date}'")
+            clauses.append(f"TxnDate >= '{_esc(from_date)}'")
         if to_date:
-            clauses.append(f"TxnDate <= '{to_date}'")
+            clauses.append(f"TxnDate <= '{_esc(to_date)}'")
 
         sql = "SELECT * FROM Bill"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += f" ORDERBY TxnDate DESC MAXRESULTS {limit}"
+        sql += f" ORDERBY TxnDate DESC MAXRESULTS {_clamp_limit(limit)}"
 
         data = await client.query(sql)
         raw = data.get("QueryResponse", {}).get("Bill", [])

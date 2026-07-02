@@ -22,7 +22,7 @@ VOLUME ["/data"]
 ENV MCP_TRANSPORT=streamable-http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8000
-ENV DB_PATH=/data/qbo_mcp.db
+ENV DB_PATH=/data/accounting.db
 
 EXPOSE 8000
 

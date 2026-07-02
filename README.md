@@ -107,7 +107,7 @@ Highlights:
 | `QBO_CLIENT_SECRET` | — | Intuit app Client Secret (required) |
 | `QBO_ENVIRONMENT` | `sandbox` | `sandbox` or `production` |
 | `QBO_REDIRECT_URI` | `http://localhost:8000/oauth/callback` | OAuth callback URL |
-| `DB_PATH` | `./qbo_mcp.db` | SQLite database path |
+| `DB_PATH` | `./accounting.db` | SQLite database path |
 | `DEFAULT_DRAFT_MODE` | `true` | All writes go to draft first |
 | `LOG_LEVEL` | `INFO` | Logging level |
 

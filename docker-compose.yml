@@ -11,7 +11,7 @@ services:
     environment:
       MCP_TRANSPORT: streamable-http
       MCP_PORT: 8000
-      DB_PATH: /data/qbo_mcp.db
+      DB_PATH: /data/accounting.db
       QBO_CLIENT_ID: ${QBO_CLIENT_ID}
       QBO_CLIENT_SECRET: ${QBO_CLIENT_SECRET}
       QBO_ENVIRONMENT: ${QBO_ENVIRONMENT:-sandbox}

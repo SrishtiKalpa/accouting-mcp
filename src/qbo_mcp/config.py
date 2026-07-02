@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     qbo_redirect_uri: str = "http://localhost:8000/oauth/callback"
 
     # Database
-    db_path: str = "./qbo_mcp.db"
+    db_path: str = "./accounting.db"
 
     # Safety defaults
     default_draft_mode: bool = True    # all writes go to draft first

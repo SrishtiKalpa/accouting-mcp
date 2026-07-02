@@ -1,0 +1,34 @@
+services:
+  qbo-mcp:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: production
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    volumes:
+      - qbo-data:/data
+    environment:
+      MCP_TRANSPORT: streamable-http
+      MCP_PORT: 8000
+      DB_PATH: /data/qbo_mcp.db
+      QBO_CLIENT_ID: ${QBO_CLIENT_ID}
+      QBO_CLIENT_SECRET: ${QBO_CLIENT_SECRET}
+      QBO_ENVIRONMENT: ${QBO_ENVIRONMENT:-sandbox}
+      QBO_REDIRECT_URI: ${BASE_URL:-http://localhost:8000}/oauth/callback
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  qbo-data:

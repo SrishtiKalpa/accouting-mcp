@@ -1,0 +1,13 @@
+services:
+  qbo-mcp:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: deps
+    command: fastmcp run src/qbo_mcp/server.py --transport http --port 8000 --reload
+    environment:
+      QBO_ENVIRONMENT: sandbox
+      LOG_LEVEL: DEBUG
+    volumes:
+      - ./src:/app/src
+      - ./dev-data:/data

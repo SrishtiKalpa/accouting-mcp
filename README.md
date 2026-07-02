@@ -1,5 +1,6 @@
 # qbo-mcp
 
+[![CI](https://github.com/SrishtiKalpa/accouting-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/SrishtiKalpa/accouting-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/qbo-mcp)](https://pypi.org/project/qbo-mcp/)
 [![Docker Pulls](https://img.shields.io/docker/pulls/srishtikalpa/qbo-mcp)](https://hub.docker.com/r/srishtikalpa/qbo-mcp)

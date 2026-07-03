@@ -6,14 +6,14 @@ RUN pip install uv --no-cache-dir
 # ── deps stage ────────────────────────────────────────────────────────────────
 FROM base AS deps
 COPY pyproject.toml .
+COPY src/ ./src/
 RUN uv pip install --system ".[dev]" --no-cache
 
 # ── production stage ──────────────────────────────────────────────────────────
 FROM base AS production
 COPY pyproject.toml .
-RUN uv pip install --system . --no-cache
-
 COPY src/ ./src/
+RUN uv pip install --system . --no-cache
 
 RUN mkdir -p /data && useradd -r -u 1001 appuser && chown appuser /data
 USER appuser

@@ -5,13 +5,13 @@ RUN pip install uv --no-cache-dir
 
 # ── deps stage ────────────────────────────────────────────────────────────────
 FROM base AS deps
-COPY pyproject.toml .
+COPY pyproject.toml README.md LICENSE ./
 COPY src/ ./src/
 RUN uv pip install --system ".[dev]" --no-cache
 
 # ── production stage ──────────────────────────────────────────────────────────
 FROM base AS production
-COPY pyproject.toml .
+COPY pyproject.toml README.md LICENSE ./
 COPY src/ ./src/
 RUN uv pip install --system . --no-cache
 
